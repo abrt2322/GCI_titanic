@@ -100,6 +100,7 @@ y_train = train['Survived']
 
 X_train, X_valid, y_train, y_valid = train_test_split(X_train, y_train, test_size=0.3, random_state=0, stratify=y_train)
 
+
 def objective(trial):
     params = {
         'objective': 'binary',
@@ -115,14 +116,15 @@ def objective(trial):
     score = log_loss(y_valid, y_pred_valid)
     return score
 
+
 study = optuna.create_study(sampler=optuna.samplers.RandomSampler(seed=0))
 study.optimize(objective, n_trials=40)
 
 params = {
-    'objective': 'binary',
+    'objective': 'mean_squared_error',
     'max_bin': study.best_params['max_bin'],
-    'learning_rate': 0.05,
     'num_leaves': study.best_params['num_leaves'],
+    'learning_rate': 0.05,
 }
 
 lgb_train = lgb.Dataset(X_train, y_train)

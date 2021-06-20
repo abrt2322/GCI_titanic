@@ -1,11 +1,10 @@
-import numpy as np
 import pandas as pd
-import pylab as plt
-import seaborn as sns
+import numpy as np
 from kernel import functions
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import train_test_split
+from chainer import serializers, Chain
+import chainer.functions as F
+import chainer.links as L
+
 
 train = pd.read_csv("../data/train.csv")
 test = pd.read_csv("../data/test.csv")
@@ -73,49 +72,63 @@ tot.FamDeath.fillna(0.5, inplace=True)
 del tot["Ticket"], tot["Cabin"], tot["RT"], tot["LT"]
 del tot["FamSize"], tot["Name"]
 
-print(pd.crosstab(tot['FamilySize'], tot['Sex']))
-print(tot.head(10))
-print(tot.columns)
+dropped = ["PassengerId", "n", "Embarked", "Parch", "SibSp", "Tlen", 'IsAlone']
 
-dropped = ["Perished", "n"]
+tot = tot.drop(dropped, axis=1)
 
-clf =RandomForestClassifier(oob_score=True, n_estimators=100, max_depth=5)
-clf.fit(tot[tot.n == 0].drop(dropped, axis=1), tot[tot.n == 0].Perished)
-features = pd.DataFrame(clf.feature_importances_, index=tot[tot.n == 0].drop(dropped, axis=1).keys()).sort_values(by=0, ascending=False)
-features.plot.bar(legend=False)
+train = tot[:len(train)]
+test = tot[len(train):]
+y_train = train['Perished']
+X_train = train.drop('Perished', axis=1)
+X_test = test.drop('Perished', axis=1)
 
-dropped = ["Perished", "n", "PassengerId", "Embarked", "Parch", "SibSp", "Tlen", 'IsAlone']
-parameters = {
-        'n_estimators': [100],
-        'random_state': [1],
-        'n_jobs': [3],
-        'min_samples_split': np.arange(8, 12),
-        'max_depth': np.arange(2, 6)
-}
-clf = GridSearchCV(RandomForestClassifier(), parameters)
-clf.fit(tot[tot.n == 0].drop(dropped,axis = 1), tot[tot.n==0].Perished)
-clf = clf.best_estimator_
-data = []
-num_trial = 10
 
-for i in range(num_trial):
-    X_train, X_test, y_train, y_test = train_test_split(tot[tot.n == 0].drop(dropped, axis=1), tot[tot.n == 0].Perished,
-                                                        random_state=i)
-    clf.fit(X_train, y_train)
-    data.append(clf.score(X_test, y_test))
+# モデルの形を設定。こちらは、学習させた時と同じ形にする。
+class MyChain(Chain):
 
-plt.scatter(np.arange(num_trial), data)
+    def __init__(self):
+        super(MyChain, self).__init__(
+            l1=L.Linear(4, 800),
+            l2=L.Linear(800, 400),
+            l3=L.Linear(400, 2),
+        )
 
-ser = pd.Series(data)
+    def __call__(self, x):
+        h1 = F.sigmoid(self.l1(x))
+        h2 = F.sigmoid(self.l2(h1))
+        o = self.l3(h2)
+        return o
 
-plt.figure("Validation")
-fig = sns.distplot(data, axlabel="Score").get_figure()
 
-plt.show()
+model = L.Classifier(MyChain())
 
-clf.fit(tot[tot.n == 0].drop(dropped, axis=1), tot[tot.n == 0].Perished)
-subm = tot[tot.n == 1].drop(["Perished"], axis=1).join(pd.Series(clf.predict(tot[tot.n == 1].drop(dropped, axis=1)), name="Perished"))
+# 学習済みモデルの読み込み
+serializers.load_npz('sampleNN.model', model)
 
-subm = subm[["PassengerId", "Perished"]].set_index("PassengerId")
-subm.Perished = subm.Perished.map(lambda x: int(x))
-subm.to_csv("Submission3.csv")
+# 予測したいデータの読み込み
+df = X_test
+N = len(df)  # データの行数
+
+# データの正規化。学習時におこなったものと同じものを行う。
+df.iloc[:, :-1] /= df.iloc[:, :-1].max()
+
+# 入力データをnumpy配列に変更
+data = np.array(df.iloc[:, :-1]).astype(np.float32)
+
+# 予測後の出力ノードの配列を作成
+outputArray = model.predictor(data).data
+
+# 予測結果の配列を作成
+ansArray = np.argmax(outputArray, axis=1)
+
+# 出力ノードの値のデータフレーム版を作成
+outputDF = pd.DataFrame(outputArray, columns=["output_0", "output_1"])
+
+# 予測結果のデータフレーム版を作成
+ansDF = pd.DataFrame(ansArray, columns=["PredictedValue"])
+
+# 真の値と、予測結果、出力ノードの値を格納したデータフレームを作成
+result = pd.concat([df.disease, ansDF, outputDF], axis=1)
+
+# 結果をcsvファイルへ出力
+result.to_csv("samplePredict.csv", index=False)
